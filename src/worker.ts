@@ -1,11 +1,13 @@
 import { createInterface } from "node:readline";
 import { readSessionRequest, startSession, type SessionUpdate } from "./session.ts";
+import { checkForUpdate, readUpdateRequest, type UpdateResult } from "./updater.ts";
 
 const input = createInterface({ input: process.stdin });
 let session: ReturnType<typeof startSession> | undefined;
 let closed = false;
+const updateAbort = new AbortController();
 
-function update(value: SessionUpdate) {
+function update(value: SessionUpdate | UpdateResult) {
   if (!closed) process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
@@ -16,10 +18,15 @@ function fail(error: unknown) {
   input.close();
 }
 
-input.once("line", (line) => {
+input.once("line", async (line) => {
   try {
-    const request = readSessionRequest(JSON.parse(line));
-    session = startSession(request, { update, error: fail });
+    const request = JSON.parse(line);
+    if (request?.mode === "update") {
+      await checkForUpdate(readUpdateRequest(request), update, updateAbort.signal);
+      input.close();
+      return;
+    }
+    session = startSession(readSessionRequest(request), { update, error: fail });
   } catch (error) {
     fail(error);
   }
@@ -27,6 +34,7 @@ input.once("line", (line) => {
 
 input.once("close", () => {
   closed = true;
+  updateAbort.abort();
   process.stdin.pause();
   session?.close();
 });

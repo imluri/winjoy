@@ -18,6 +18,7 @@ const paths = {
   join: <path d="M13 4h6a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-6M3 12h12m-4-4 4 4-4 4"/>,
   keyboard: <><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.02M10.3 10h.02m3.3 0h.02m3.3 0h.02M7 14h.02m3.5 0h6.5"/></>,
   copy: <><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 4H6a2 2 0 0 0-2 2v10"/></>,
+  download: <path d="M12 3v12m-4-4 4 4 4-4M4 17v3h16v-3"/>,
 }
 
 export function Icon({ name, size = 19 }) {

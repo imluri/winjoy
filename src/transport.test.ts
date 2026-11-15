@@ -12,15 +12,17 @@ afterEach(() => {
 
 function host(port = 0) {
   const states: number[] = [];
+  const latencies: (number | null)[] = [];
   const transport = startHostTransport({
     hostname: "127.0.0.1",
     port,
     token: TOKEN,
     onState: (state) => states.push(state),
     onStatus: () => {},
+    onLatency: (ms) => latencies.push(ms),
   });
   cleanup.push(transport.stop);
-  return { ...transport, url: new URL(`http://127.0.0.1:${transport.port}`), states };
+  return { ...transport, url: new URL(`http://127.0.0.1:${transport.port}`), states, latencies };
 }
 
 function socket(url: URL, token: string) {
@@ -103,6 +105,32 @@ test("guest sends changed inputs, maintains held inputs, and reconnects", async 
   await until(() => replacement.states[0] === INPUT);
   guest.stop();
   await until(() => replacement.states[1] === 0);
+});
+
+test("both peers measure round-trip latency and clear it on disconnect", async () => {
+  const first = host();
+  const guestLatencies: (number | null)[] = [];
+  const guest = startGuestTransport({
+    url: first.url,
+    token: TOKEN,
+    onStatus: () => {},
+    onLatency: (ms) => guestLatencies.push(ms),
+  });
+  cleanup.push(guest.stop);
+
+  await until(() => first.latencies.length > 0 && guestLatencies.length > 0, 950);
+  expect(first.latencies[0]).toBeGreaterThanOrEqual(0);
+  expect(guestLatencies[0]).toBeGreaterThanOrEqual(0);
+
+  first.stop();
+  await until(() => guestLatencies.at(-1) === null);
+  expect(first.latencies.at(-1)).toBeNull();
+
+  const replacement = host(first.port);
+  await until(() => typeof replacement.latencies.at(-1) === "number" && typeof guestLatencies.at(-1) === "number");
+  guest.stop();
+  expect(guestLatencies.at(-1)).toBeNull();
+  await until(() => replacement.latencies.at(-1) === null);
 });
 
 test("guest reconnects when the host socket stops responding", async () => {

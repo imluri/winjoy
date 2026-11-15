@@ -5,14 +5,15 @@ import { openKeyboard } from "./keyboard.ts";
 import { startGuestTransport, startHostTransport } from "./transport.ts";
 
 export type SessionRequest =
-  | { mode: "host"; bind: string; port: number; windowTitle: string }
-  | { mode: "guest"; address: string; token: string; windowTitle?: string };
+  | { mode: "host"; bind: string; port: number }
+  | { mode: "guest"; address: string; token: string };
 
 export type SessionUpdate = {
   phase?: "running" | "error";
   status?: string;
   capture?: { enabled: boolean; active: boolean };
   connected?: boolean;
+  latencyMs?: number | null;
   invite?: { address: string; token: string };
 };
 
@@ -24,23 +25,20 @@ type SessionEvents = {
 export function readSessionRequest(input: unknown): SessionRequest {
   if (!input || typeof input !== "object" || !("mode" in input)) throw new Error("Select Host or Join.");
   const values = input as Record<string, unknown>;
-  const title = typeof values.windowTitle === "string" ? values.windowTitle.trim() : "";
-  if (title.length > 160) throw new Error("Use a shorter window title.");
-
   if (values.mode === "host") {
     const { bind, port } = values;
     if (typeof bind !== "string" || !isIP(bind)) throw new Error("Choose a valid IP address to listen on.");
     if (typeof port !== "number" || !Number.isInteger(port) || port < 0 || port > 65535) {
       throw new Error("The port must be an integer from 0 to 65535.");
     }
-    return { mode: "host", bind, port, windowTitle: title || "Cuphead" };
+    return { mode: "host", bind, port };
   }
   if (values.mode === "guest") {
     const address = typeof values.address === "string" ? values.address.trim() : "";
     const token = typeof values.token === "string" ? values.token.trim() : "";
     if (!URL.canParse(address)) throw new Error("Enter the host address from the invitation.");
     if (!/^[A-Za-z0-9_-]{32}$/.test(token)) throw new Error("Copy the complete code from the current WinJoy invitation.");
-    return { mode: "guest", address, token, windowTitle: title || undefined };
+    return { mode: "guest", address, token };
   }
   throw new Error("Select Host or Join.");
 }
@@ -68,11 +66,12 @@ export function startSession(request: SessionRequest, { update, error }: Session
 
   const onCapture = (_message: string, capture: NonNullable<SessionUpdate["capture"]>) => update({ capture });
   const onStatus = (status: string, connected: boolean) => update({ status, connected });
+  const onLatency = (latencyMs: number | null) => update({ latencyMs });
 
   if (request.mode === "guest") {
-    const keyboard = openKeyboard(request.windowTitle, true, onCapture);
+    const keyboard = openKeyboard(onCapture);
     try {
-      const transport = startGuestTransport({ url: new URL(request.address), token: request.token, onStatus });
+      const transport = startGuestTransport({ url: new URL(request.address), token: request.token, onStatus, onLatency });
       const loop = poll(() => transport.setState(keyboard.sample()));
       update({ phase: "running" });
       return {
@@ -89,7 +88,7 @@ export function startSession(request: SessionRequest, { update, error }: Session
   }
 
   const token = randomBytes(24).toString("base64url");
-  const keyboard = openKeyboard(request.windowTitle, false, onCapture);
+  const keyboard = openKeyboard(onCapture);
   try {
     const controllers = createControllers();
     let lastState = 0;
@@ -106,6 +105,7 @@ export function startSession(request: SessionRequest, { update, error }: Session
         port,
         token,
         onStatus,
+        onLatency,
         onState(state) {
           try {
             controllers.set(2, state);

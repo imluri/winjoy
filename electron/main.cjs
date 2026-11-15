@@ -6,6 +6,10 @@ const { networkInterfaces } = require('node:os')
 const path = require('node:path')
 const { createInterface } = require('node:readline')
 const { pathToFileURL } = require('node:url')
+const { launchUpdateInstaller } = require('./update-install.cjs')
+
+const primaryInstance = app.requestSingleInstanceLock()
+if (!primaryInstance) app.quit()
 
 const scheme = 'desktop-ui'
 const host = 'app'
@@ -14,11 +18,15 @@ const rendererDir = path.resolve(__dirname, '../dist/renderer')
 const quitGraceMs = 15_000
 const idle = {
   phase: 'idle', mode: null, status: 'Ready to host or join.',
-  capture: null, connected: false, invite: null,
+  capture: null, connected: false, latencyMs: null, invite: null,
 }
 let state = idle
 let activeWorker
 let quitting = false
+let updateWorker
+let stagedInstaller
+let installingUpdate = false
+let updaterState = { phase: 'idle', currentVersion: app.getVersion(), status: 'WinJoy checks for updates when it starts.' }
 const contentPolicy = [
   "default-src 'self'",
   "script-src 'self'",
@@ -91,25 +99,19 @@ function networkAddresses() {
   return [...addresses.values(), { address: '127.0.0.1', name: 'This PC only' }]
 }
 
-function normalizeTitle(value) {
-  if (value === undefined || value === null) return undefined
-  if (typeof value !== 'string' || value.trim().length > 160) throw new Error('Enter a shorter window title.')
-  return value.trim() || undefined
-}
-
 function normalizeHost(options) {
-  const { bind, port, windowTitle } = options ?? {}
+  const { bind, port } = options ?? {}
   if (typeof bind !== 'string' || !isIPv4(bind) || bind === '0.0.0.0') {
     throw new Error('Select a local network address to host on.')
   }
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new Error('Enter a port from 0 to 65535.')
   }
-  return { mode: 'host', bind, port, windowTitle: normalizeTitle(windowTitle) ?? 'Cuphead' }
+  return { mode: 'host', bind, port }
 }
 
 function normalizeGuest(options) {
-  const { address, token, windowTitle } = options ?? {}
+  const { address, token } = options ?? {}
   if (typeof address !== 'string' || address.length > 1_024) throw new Error('Enter a host address.')
   const trimmed = address.trim()
   let url
@@ -125,22 +127,36 @@ function normalizeGuest(options) {
   if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(token.trim())) {
     throw new Error('Enter the 32-character token from the host.')
   }
-  return { mode: 'guest', address: url.href, token: token.trim(), windowTitle: normalizeTitle(windowTitle) }
+  return { mode: 'guest', address: url.href, token: token.trim() }
 }
 
-function startWorker(options) {
-  if (quitting || activeWorker) throw new Error('Stop the current session before starting a new one.')
-  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('WinJoy requires Windows x64.')
+const bundledBin = path.join(process.resourcesPath, 'bin')
+const bundledWorker = path.join(bundledBin, 'winjoy-worker.exe')
 
-  const bundledBin = path.join(process.resourcesPath, 'bin')
-  const bundledWorker = path.join(bundledBin, 'winjoy-worker.exe')
+function spawnBunWorker() {
   const bundled = existsSync(bundledWorker)
   const command = bundled ? bundledWorker : process.env.WINJOY_BUN_EXE || 'bun'
   const args = bundled ? [] : [path.resolve(__dirname, '../src/worker.ts')]
   const env = { ...process.env }
   if (bundled && !env.WINJOY_VIGEM_DLL) env.WINJOY_VIGEM_DLL = path.join(bundledBin, 'ViGEmClient.dll')
 
-  const child = spawn(command, args, { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+  return spawn(command, args, { env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+}
+
+async function waitForChildExit(child, closed) {
+  const timer = setTimeout(() => child.kill(), quitGraceMs)
+  try {
+    await closed
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function startWorker(options) {
+  if (quitting || installingUpdate || activeWorker) throw new Error('Stop the current session before starting a new one.')
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('WinJoy requires Windows x64.')
+
+  const child = spawnBunWorker()
   const worker = { child, stopping: false }
   activeWorker = worker
   updateState({ ...idle, mode: options.mode, phase: 'starting', status: 'Starting WinJoy…' })
@@ -161,6 +177,7 @@ function startWorker(options) {
     if (patch.capture === null || (typeof patch.capture?.enabled === 'boolean' &&
         typeof patch.capture?.active === 'boolean')) changes.capture = patch.capture
     if (typeof patch.connected === 'boolean') changes.connected = patch.connected
+    if (patch.latencyMs === null || (Number.isFinite(patch.latencyMs) && patch.latencyMs >= 0)) changes.latencyMs = patch.latencyMs
     if (patch.invite === null || (typeof patch.invite?.address === 'string' &&
         typeof patch.invite?.token === 'string')) changes.invite = patch.invite
     if (Object.keys(changes).length) updateState(changes)
@@ -171,7 +188,7 @@ function startWorker(options) {
   child.stdin.on('error', () => {})
   child.on('error', error => {
     if (activeWorker !== worker || worker.stopping) return
-    const status = !bundled && error.code === 'ENOENT'
+    const status = !existsSync(bundledWorker) && error.code === 'ENOENT'
       ? 'Bun 1.4.4 or newer is required. Install Bun or set WINJOY_BUN_EXE to its executable path.'
       : 'WinJoy could not start its background process.'
     updateState({ ...idle, mode: options.mode, phase: 'error', status })
@@ -209,8 +226,75 @@ async function stopWorker() {
     updateState({ ...idle, mode: state.mode, phase: 'stopping', status: 'Stopping WinJoy…' })
     worker.child.stdin.end()
   }
-  await worker.closed
+  await waitForChildExit(worker.child, worker.closed)
   return state
+}
+
+function publishUpdate({ phase, status, version, progress }) {
+  updaterState = { phase, status, version, progress, currentVersion: app.getVersion() }
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('winjoy:update-state', updaterState)
+  }
+}
+
+function updateDirectory() {
+  return path.join(app.getPath('userData'), 'updates')
+}
+
+function checkForUpdates() {
+  if (quitting || installingUpdate || updateWorker) return updaterState
+  if (!existsSync(bundledWorker)) {
+    publishUpdate({ phase: 'error', status: 'Open the packaged WinJoy app to check for updates.' })
+    return updaterState
+  }
+
+  stagedInstaller = undefined
+  const child = spawnBunWorker()
+  const job = { child, closed: new Promise(resolve => child.once('close', resolve)) }
+  updateWorker = job
+  publishUpdate({ phase: 'checking', status: 'Checking GitHub for updates…' })
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity })
+  let terminal = false
+  lines.on('line', line => {
+    let patch
+    try { patch = JSON.parse(line) } catch { return }
+    if (!patch || typeof patch.status !== 'string' || !['current', 'available', 'downloading', 'ready', 'error'].includes(patch.phase)) return
+    if (patch.phase === 'ready') {
+      const { installer } = patch
+      if (!installer || typeof installer.path !== 'string' || typeof installer.sha256 !== 'string' || installer.version !== patch.version) return
+      stagedInstaller = installer
+    }
+    terminal = ['current', 'ready', 'error'].includes(patch.phase)
+    publishUpdate(patch)
+  })
+  child.stderr.resume()
+  child.stdin.on('error', () => {})
+  child.on('error', () => {})
+  child.once('close', () => {
+    lines.close()
+    updateWorker = undefined
+    if (!terminal && !quitting) publishUpdate({ phase: 'error', status: 'WinJoy could not finish checking for updates. Try again.' })
+  })
+  child.stdin.write(JSON.stringify({ mode: 'update', currentVersion: app.getVersion(), cacheDir: updateDirectory() }) + '\n')
+  return updaterState
+}
+
+async function installUpdate() {
+  if (installingUpdate || !stagedInstaller || updaterState.phase !== 'ready') throw new Error('There is no verified update ready to install.')
+  installingUpdate = true
+  try {
+    if (activeWorker) await stopWorker()
+    if (updateWorker) {
+      const job = updateWorker
+      job.child.stdin.end()
+      await waitForChildExit(job.child, job.closed)
+    }
+    await launchUpdateInstaller(stagedInstaller, { stagingDirectory: updateDirectory() })
+    app.quit()
+  } catch (error) {
+    installingUpdate = false
+    throw error
+  }
 }
 
 function registerWinJoyActions() {
@@ -226,6 +310,9 @@ function registerWinJoyActions() {
   handle('start-host', options => startWorker(normalizeHost(options)))
   handle('start-guest', options => startWorker(normalizeGuest(options)))
   handle('stop', stopWorker)
+  handle('get-update-state', () => updaterState)
+  handle('check-for-updates', checkForUpdates)
+  handle('install-update', installUpdate)
   handle('copy', text => {
     if (typeof text !== 'string' || text.length > 4_096) throw new Error('The text could not be copied.')
     clipboard.writeText(text)
@@ -267,18 +354,28 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (!primaryInstance) return
   protocol.handle(scheme, serveRenderer)
   session.defaultSession.setPermissionCheckHandler(() => false)
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
   registerWindowActions()
   registerWinJoyActions()
   createWindow()
+  if (existsSync(bundledWorker)) setTimeout(checkForUpdates, 1500).unref()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
+app.on('second-instance', () => {
+  const [window] = BrowserWindow.getAllWindows()
+  if (!window) return
+  if (window.isMinimized()) window.restore()
+  window.focus()
+})
+
 app.on('before-quit', event => {
+  updateWorker?.child.stdin.end()
   if (!activeWorker) return
   event.preventDefault()
   if (quitting) return

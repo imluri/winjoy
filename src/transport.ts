@@ -13,6 +13,7 @@ const INITIAL_RETRY_MS = 500;
 const MAX_RETRY_MS = 5_000;
 
 type StatusHandler = (message: string, connected: boolean) => void;
+type LatencyHandler = (ms: number | null) => void;
 
 interface HostOptions {
   hostname: string;
@@ -20,20 +21,58 @@ interface HostOptions {
   token: string;
   onState: (state: number) => void;
   onStatus: StatusHandler;
+  onLatency?: LatencyHandler;
 }
 
 interface GuestOptions {
   url: URL;
   token: string;
   onStatus: StatusHandler;
+  onLatency?: LatencyHandler;
 }
 
 interface GuestSeat {
   socket?: ServerWebSocket<GuestSeat>;
   lastSeen: number;
+  latency?: ReturnType<typeof createLatencyProbe>;
 }
 
-export function startHostTransport({ hostname, port, token, onState, onStatus }: HostOptions) {
+function createLatencyProbe(onLatency?: LatencyHandler) {
+  const payload = Buffer.alloc(4);
+  let sentAt: number | undefined;
+  let nextPing = 0;
+  let lastSample: number | null = null;
+
+  function publish(sample: number | null) {
+    if (sample === lastSample) return;
+    lastSample = sample;
+    onLatency?.(sample);
+  }
+
+  return {
+    ping(now: number, send: (payload: Buffer) => void) {
+      if (now < nextPing || (sentAt !== undefined && now - sentAt < PONG_TIMEOUT_MS)) return;
+      sentAt = now;
+      nextPing = now + PING_INTERVAL_MS;
+      payload.writeUInt32LE((payload.readUInt32LE() + 1) >>> 0);
+      send(payload);
+    },
+    pong(data: unknown, now: number) {
+      if (sentAt === undefined || !Buffer.isBuffer(data) || !payload.equals(data)) return false;
+      const sample = Math.round(now - sentAt);
+      sentAt = undefined;
+      publish(sample);
+      return true;
+    },
+    reset() {
+      sentAt = undefined;
+      nextPing = 0;
+      publish(null);
+    },
+  };
+}
+
+export function startHostTransport({ hostname, port, token, onState, onStatus, onLatency }: HostOptions) {
   const expectedAuth = Buffer.from(`Bearer ${token}`);
   let guest: GuestSeat | undefined;
   let state = 0;
@@ -49,6 +88,7 @@ export function startHostTransport({ hostname, port, token, onState, onStatus }:
     if (guest !== seat) return false;
     guest = undefined;
     apply(0);
+    seat.latency?.reset();
     return true;
   }
 
@@ -67,7 +107,7 @@ export function startHostTransport({ hostname, port, token, onState, onStatus }:
       }
       if (guest) return new Response("Player 2 is already connected\n", { status: 409 });
 
-      const seat = { lastSeen: performance.now() };
+      const seat = { lastSeen: performance.now(), latency: onLatency && createLatencyProbe(onLatency) };
       guest = seat;
       if (server.upgrade(request, { data: seat })) return;
       release(seat);
@@ -84,6 +124,7 @@ export function startHostTransport({ hostname, port, token, onState, onStatus }:
         }
         socket.data.socket = socket;
         onStatus("Player 2 connected.", true);
+        socket.data.latency?.ping(performance.now(), (payload) => socket.ping(payload));
       },
       message(socket, message) {
         if (guest !== socket.data) return;
@@ -98,6 +139,9 @@ export function startHostTransport({ hostname, port, token, onState, onStatus }:
         socket.data.lastSeen = performance.now();
         apply(next);
       },
+      pong(socket, data) {
+        if (guest === socket.data) socket.data.latency?.pong(data, performance.now());
+      },
       close(socket) {
         if (release(socket.data)) onStatus("Player 2 disconnected.", false);
       },
@@ -106,9 +150,15 @@ export function startHostTransport({ hostname, port, token, onState, onStatus }:
 
   const timeout = setInterval(() => {
     const seat = guest;
-    if (!seat || performance.now() - seat.lastSeen < GUEST_TIMEOUT_MS) return;
-    if (release(seat)) onStatus("Player 2 timed out.", false);
-    seat.socket?.close(1008, "Controller input timed out");
+    if (!seat) return;
+    const now = performance.now();
+    if (now - seat.lastSeen >= GUEST_TIMEOUT_MS) {
+      if (release(seat)) onStatus("Player 2 timed out.", false);
+      seat.socket?.close(1008, "Controller input timed out");
+      return;
+    }
+    const socket = seat.socket;
+    if (socket) seat.latency?.ping(now, (payload) => socket.ping(payload));
   }, 100);
 
   return {
@@ -121,7 +171,7 @@ export function startHostTransport({ hostname, port, token, onState, onStatus }:
   };
 }
 
-export function startGuestTransport({ url, token, onStatus }: GuestOptions) {
+export function startGuestTransport({ url, token, onStatus, onLatency }: GuestOptions) {
   const endpoint = new URL(url);
   if (endpoint.protocol === "http:") endpoint.protocol = "ws:";
   if (endpoint.protocol === "https:") endpoint.protocol = "wss:";
@@ -139,7 +189,7 @@ export function startGuestTransport({ url, token, onStatus }: GuestOptions) {
   let connectTimeout: ReturnType<typeof setTimeout> | undefined;
   let retryDelay = INITIAL_RETRY_MS;
   let lastPong = 0;
-  let nextPing = 0;
+  const latency = createLatencyProbe(onLatency);
 
   function send() {
     if (socket?.readyState !== WebSocket.OPEN) return;
@@ -165,17 +215,19 @@ export function startGuestTransport({ url, token, onStatus }: GuestOptions) {
       clearTimeout(connectTimeout);
       retryDelay = INITIAL_RETRY_MS;
       lastPong = performance.now();
-      nextPing = lastPong + PING_INTERVAL_MS;
       onStatus("Connected to the host as Player 2.", true);
       send();
+      latency.ping(lastPong, (payload) => connection.ping(payload));
     });
-    connection.addEventListener("pong", () => {
-      if (socket === connection) lastPong = performance.now();
+    connection.addEventListener("pong", (event) => {
+      const now = performance.now();
+      if (socket === connection && latency.pong(event.data, now)) lastPong = now;
     });
     connection.addEventListener("close", () => {
       if (socket !== connection || stopped) return;
       socket = undefined;
       clearTimeout(connectTimeout);
+      latency.reset();
       onStatus(`Host connection closed. Retrying in ${retryDelay / 1000}s.`, false);
       retry = setTimeout(connect, retryDelay);
       retryDelay = Math.min(MAX_RETRY_MS, retryDelay * 2);
@@ -185,16 +237,14 @@ export function startGuestTransport({ url, token, onStatus }: GuestOptions) {
   onStatus(`Connecting to ${endpoint.host} as Player 2.`, false);
   connect();
   const heartbeat = setInterval(() => {
-    if (socket?.readyState !== WebSocket.OPEN) return;
+    const connection = socket;
+    if (connection?.readyState !== WebSocket.OPEN) return;
     const now = performance.now();
     if (now - lastPong >= PONG_TIMEOUT_MS) {
-      socket.terminate();
+      connection.terminate();
       return;
     }
-    if (now >= nextPing) {
-      socket.ping();
-      nextPing = now + PING_INTERVAL_MS;
-    }
+    latency.ping(now, (payload) => connection.ping(payload));
     send();
   }, HEARTBEAT_MS);
 
@@ -209,9 +259,9 @@ export function startGuestTransport({ url, token, onStatus }: GuestOptions) {
       clearInterval(heartbeat);
       clearTimeout(retry);
       clearTimeout(connectTimeout);
-      if (socket?.readyState === WebSocket.OPEN) socket.close();
-      else socket?.terminate();
+      socket?.terminate();
       socket = undefined;
+      latency.reset();
     },
   };
 }

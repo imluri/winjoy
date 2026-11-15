@@ -262,6 +262,7 @@ kbd {
 .session-details dd, .control-list dd, .invite-address dd { margin: 0; }
 .session-details dd, .control-list dd { display: flex; align-items: center; gap: 6px; }
 .session-capture-help { font-size: .92em; }
+.session-latency { font-variant-numeric: tabular-nums; }
 
 .status-dot {
   width: 8px;
@@ -309,6 +310,20 @@ kbd {
 .button-secondary { background: var(--ui-surface); border-color: var(--ui-control-border); color: var(--ui-ink); }
 .button-secondary:not(:disabled):hover { background: var(--ui-soft); }
 .button-secondary:disabled { color: var(--ui-muted); }
+
+.update-actions, .update-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px 16px;
+  margin: 0 19px 17px;
+}
+
+.update-actions { flex-wrap: wrap; justify-content: space-between; }
+.update-copy { flex: 1 1 225px; color: var(--ui-muted); line-height: 1.45; }
+.update-copy p { margin: 0; }
+.update-copy p + p { margin-top: 4px; }
+.update-progress { color: var(--ui-muted); font-variant-numeric: tabular-nums; }
+.update-progress progress { flex: 1; min-width: 0; height: 9px; accent-color: var(--ui-accent); }
 
 @media (max-width: 570px) {
   .page-content .setting-field:not(.setting-field--wide) {

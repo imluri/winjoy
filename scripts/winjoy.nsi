@@ -3,8 +3,7 @@ Name "WinJoy"
 OutFile "${WINJOY_OUTPUT}"
 InstallDir "$LOCALAPPDATA\Programs\WinJoy"
 RequestExecutionLevel user
-SetCompressor /SOLID lzma
-SetCompressorDictSize 32
+SetCompressor zlib
 
 VIProductVersion "${WINJOY_FILE_VERSION}"
 VIAddVersionKey "FileDescription" "WinJoy Setup"
@@ -14,6 +13,7 @@ VIAddVersionKey "ProductVersion" "${WINJOY_VERSION}"
 VIAddVersionKey "LegalCopyright" "Copyright (c) WinJoy contributors"
 
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
 !include "WinVer.nsh"
 !include "x64.nsh"
 
@@ -38,6 +38,35 @@ Function .onInit
     SetErrorLevel 1
     Quit
   ${EndIf}
+  Call WaitForWinJoy
+FunctionEnd
+
+Function WaitForWinJoy
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} "$0" "/WAITPID=" $1
+  ${If} ${Errors}
+    Return
+  ${EndIf}
+  ${If} $1 > 0
+    System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i r1) p .r2 ?e'
+    Pop $3
+    ${If} $2 = 0
+      ; ERROR_INVALID_PARAMETER means the WinJoy process already exited.
+      ${If} $3 = 87
+        Return
+      ${EndIf}
+    ${Else}
+      System::Call 'kernel32::WaitForSingleObject(p r2, i 45000) i .r3'
+      System::Call 'kernel32::CloseHandle(p r2)'
+      ${If} $3 = 0
+        Return
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  MessageBox MB_OK|MB_ICONSTOP "WinJoy could not close for the update. Close it and run the downloaded installer again." /SD IDOK
+  SetErrorLevel 1
+  Quit
 FunctionEnd
 
 Section "WinJoy"

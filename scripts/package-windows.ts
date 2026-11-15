@@ -17,6 +17,7 @@ const vigem = join(project, "node_modules", "vigemclient");
 const vigemDll = join(vigem, "native", "x64", "ViGEmClient.dll");
 const main = "electron/main.cjs";
 const preload = "electron/preload.cjs";
+const updateInstall = "electron/update-install.cjs";
 
 if (!existsSync(sourceIsZip ? electronSource : join(electronSource, "electron.exe"))) {
   throw new Error("Install the Electron binary or set WINJOY_ELECTRON_DIST to its Windows x64 ZIP or extracted folder.");
@@ -73,6 +74,7 @@ try {
   await mkdir(binary, { recursive: true });
   await copyFile(join(project, main), join(app, main));
   await copyFile(join(project, preload), join(app, preload));
+  await copyFile(join(project, updateInstall), join(app, updateInstall));
   await cp(renderer, join(app, "dist", "renderer"), { recursive: true });
   const manifest = await Bun.file(join(project, "package.json")).json() as { name: string; version: string };
   await writeFile(join(app, "package.json"), JSON.stringify({
