@@ -5,6 +5,7 @@ import { openKeyboard } from "./keyboard.ts";
 import { startGuestTransport, startHostTransport } from "./transport.ts";
 
 export type SessionRequest =
+  | { mode: "local" }
   | { mode: "host"; bind: string; port: number }
   | { mode: "guest"; address: string; token: string };
 
@@ -23,8 +24,9 @@ type SessionEvents = {
 };
 
 export function readSessionRequest(input: unknown): SessionRequest {
-  if (!input || typeof input !== "object" || !("mode" in input)) throw new Error("Select Host or Join.");
+  if (!input || typeof input !== "object" || !("mode" in input)) throw new Error("Select Local, Host, or Join.");
   const values = input as Record<string, unknown>;
+  if (values.mode === "local") return { mode: "local" };
   if (values.mode === "host") {
     const { bind, port } = values;
     if (typeof bind !== "string" || !isIP(bind)) throw new Error("Choose a valid IP address to listen on.");
@@ -40,7 +42,7 @@ export function readSessionRequest(input: unknown): SessionRequest {
     if (!/^[A-Za-z0-9_-]{32}$/.test(token)) throw new Error("Copy the complete code from the current WinJoy invitation.");
     return { mode: "guest", address, token };
   }
-  throw new Error("Select Host or Join.");
+  throw new Error("Select Local, Host, or Join.");
 }
 
 export function startSession(request: SessionRequest, { update, error }: SessionEvents): { close(): void } {
@@ -87,10 +89,9 @@ export function startSession(request: SessionRequest, { update, error }: Session
     }
   }
 
-  const token = randomBytes(24).toString("base64url");
   const keyboard = openKeyboard(onCapture);
   try {
-    const controllers = createControllers();
+    const controllers = createControllers(request.mode === "local" ? 1 : 2);
     let lastState = 0;
     const loop = poll(() => {
       const state = keyboard.sample();
@@ -99,6 +100,21 @@ export function startSession(request: SessionRequest, { update, error }: Session
       lastState = state;
     });
     try {
+      if (request.mode === "local") {
+        update({ phase: "running", status: "Your Xbox 360 controller is ready. Press F8 to enable keyboard input." });
+        return {
+          close() {
+            loop.stop();
+            try {
+              controllers.close();
+            } finally {
+              keyboard.close();
+            }
+          },
+        };
+      }
+
+      const token = randomBytes(24).toString("base64url");
       const { bind, port } = request;
       const transport = startHostTransport({
         hostname: bind,

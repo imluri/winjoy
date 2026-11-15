@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('desktopWindow', {
 contextBridge.exposeInMainWorld('winjoy', {
   getState: () => ipcRenderer.invoke('winjoy:get-state'),
   getAddresses: () => ipcRenderer.invoke('winjoy:get-addresses'),
+  startLocal: () => ipcRenderer.invoke('winjoy:start-local'),
   startHost: options => ipcRenderer.invoke('winjoy:start-host', options),
   startGuest: options => ipcRenderer.invoke('winjoy:start-guest', options),
   stop: () => ipcRenderer.invoke('winjoy:stop'),

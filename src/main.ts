@@ -1,15 +1,17 @@
 import { parseArgs } from "node:util";
 import { readSessionRequest, startSession } from "./session.ts";
 
-const help = `WinJoy — two keyboards, two Xbox 360 controllers
+const help = `WinJoy — keyboard to Xbox 360 controller
 
   bun run desktop
+  bun start local
   bun start host [--bind ADDRESS] [--port PORT]
   bun start guest HOST_URL --token TOKEN
 
+Local creates one controller on this PC.
 The host defaults to 127.0.0.1:4747.
 Use the host's private LAN or VPN IP with --bind to accept a remote guest.
-Both players start paused. Press F8 in the game or stream to enable capture.
+Keyboard input starts paused. Press F8 in the game or stream to enable capture.
 The guest can also set WINJOY_TOKEN in its environment.
 Press Ctrl+C in the terminal to exit.`;
 
@@ -20,26 +22,7 @@ async function main() {
     return;
   }
 
-  if (mode !== "host" && mode !== "guest") throw new Error(`Unknown command "${mode}". Run bun start --help.`);
-  const request = mode === "host"
-    ? (() => {
-      const { values } = parseArgs({
-        args,
-        options: { bind: { type: "string" }, port: { type: "string" } },
-      });
-      const port = values.port ?? "4747";
-      if (!/^\d+$/.test(port)) throw new Error("Pass a numeric port to --port.");
-      return readSessionRequest({ mode, bind: values.bind ?? "127.0.0.1", port: Number(port) });
-    })()
-    : (() => {
-      const { values, positionals } = parseArgs({
-        args,
-        allowPositionals: true,
-        options: { token: { type: "string" } },
-      });
-      if (positionals.length !== 1) throw new Error("Pass the host URL printed by WinJoy.");
-      return readSessionRequest({ mode, address: positionals[0], token: values.token ?? Bun.env.WINJOY_TOKEN });
-    })();
+  const request = parseSession(mode, args);
 
   const stop = Promise.withResolvers<void>();
   const session = startSession(request, {
@@ -62,6 +45,32 @@ async function main() {
     process.off("SIGTERM", quit);
     session.close();
   }
+}
+
+function parseSession(mode: string, args: string[]) {
+  if (mode === "local") {
+    parseArgs({ args });
+    return readSessionRequest({ mode });
+  }
+  if (mode === "host") {
+    const { values } = parseArgs({
+      args,
+      options: { bind: { type: "string" }, port: { type: "string" } },
+    });
+    const port = values.port ?? "4747";
+    if (!/^\d+$/.test(port)) throw new Error("Pass a numeric port to --port.");
+    return readSessionRequest({ mode, bind: values.bind ?? "127.0.0.1", port: Number(port) });
+  }
+  if (mode === "guest") {
+    const { values, positionals } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { token: { type: "string" } },
+    });
+    if (positionals.length !== 1) throw new Error("Pass the host URL printed by WinJoy.");
+    return readSessionRequest({ mode, address: positionals[0], token: values.token ?? Bun.env.WINJOY_TOKEN });
+  }
+  throw new Error(`Unknown command "${mode}". Run bun start --help.`);
 }
 
 try {

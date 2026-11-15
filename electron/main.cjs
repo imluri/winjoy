@@ -307,6 +307,7 @@ function registerWinJoyActions() {
 
   handle('get-state', () => state)
   handle('get-addresses', networkAddresses)
+  handle('start-local', () => startWorker({ mode: 'local' }))
   handle('start-host', options => startWorker(normalizeHost(options)))
   handle('start-guest', options => startWorker(normalizeGuest(options)))
   handle('stop', stopWorker)

@@ -13,11 +13,17 @@ const idleUpdate = { phase: 'idle', status: '', currentVersion: '' }
 
 const brand = { name: 'WinJoy', caption: 'Keyboard to controller', mark: <Icon name="gamepad" size={21} /> }
 const items = [
+  { id: 'local', label: 'Local', icon: <Icon name="gamepad" /> },
   { id: 'host', label: 'Host', icon: <Icon name="host" /> },
   { id: 'guest', label: 'Join', icon: <Icon name="join" /> },
   { id: 'controls', label: 'Controls', icon: <Icon name="keyboard" /> },
   { id: 'updates', label: 'Updates', icon: <Icon name="download" /> },
 ]
+const activeLabels = {
+  local: 'Local controller active',
+  host: 'Host session active',
+  guest: 'Guest session active',
+}
 
 function errorText(error) {
   return error?.message?.replace(/^Error invoking remote method '[^']+': Error: /, '') || String(error)
@@ -54,6 +60,15 @@ function Field({ id, label, description, children, wide }) {
       </div>
       <div className="setting-control">{children}</div>
     </div>
+  )
+}
+
+function LocalGuide() {
+  return (
+    <Section title="Play through Steam" className="play-guide">
+      <p>Install ViGEmBus on both PCs, then start a local controller on each PC before connecting through Steam Remote Play Together. Keep guest keyboard and mouse sharing off in Steam.</p>
+      <p>Focus your game or stream and press <kbd>F8</kbd> to enable capture. Press it again to pause before typing elsewhere.</p>
+    </Section>
   )
 }
 
@@ -104,26 +119,34 @@ function GuestSetup({ invite, setInvite, onSubmit, locked }) {
 }
 
 function SessionDetails({ session, onCopy, copied }) {
+  const local = session.mode === 'local'
   const host = session.mode === 'host'
+  const title = local ? 'Local controller active' : host ? 'Hosting' : 'Guest session'
   const connectedText = host ? 'Player 2 connected' : 'Connected to host'
   const waitingText = host ? 'Waiting for player 2' : 'Waiting for the host'
   const capturing = Boolean(session.capture?.active)
+  const captureTarget = local ? 'your game or stream' : host ? 'your game' : 'the game stream'
   const latency = session.connected && Number.isFinite(session.latencyMs)
     ? session.latencyMs < 1 ? '<1 ms' : `${Math.round(session.latencyMs)} ms`
     : session.connected ? 'Measuring…' : '—'
 
   return (
     <>
-      <Section title={host ? 'Hosting' : 'Guest session'}>
+      <Section title={title}>
         <dl className="session-details">
-          <div>
-            <dt>Connection</dt>
-            <dd role="status"><span className="status-dot" data-active={session.connected} />{session.connected ? connectedText : waitingText}</dd>
-          </div>
-          <div>
-            <dt>Round-trip latency</dt>
-            <dd className="session-latency">{latency}</dd>
-          </div>
+          {local ? <div>
+            <dt>Controller</dt>
+            <dd><span className="status-dot" data-active="true" />Xbox controller ready</dd>
+          </div> : <>
+            <div>
+              <dt>Connection</dt>
+              <dd role="status"><span className="status-dot" data-active={session.connected} />{session.connected ? connectedText : waitingText}</dd>
+            </div>
+            <div>
+              <dt>Round-trip latency</dt>
+              <dd className="session-latency">{latency}</dd>
+            </div>
+          </>}
           <div>
             <dt>Keyboard</dt>
             <dd role="status"><span className="status-dot" data-active={capturing} />{capturing ? 'Capturing keys' : 'Paused'}</dd>
@@ -131,7 +154,7 @@ function SessionDetails({ session, onCopy, copied }) {
         </dl>
         <p className="session-capture-help">
           {capturing ? <>Press <kbd>F8</kbd> to pause capture.</>
-            : <>Focus {host ? 'your game' : 'the game stream'} and press <kbd>F8</kbd> to enable capture.</>}
+            : <>Focus {captureTarget} and press <kbd>F8</kbd> to enable capture.</>}
         </p>
       </Section>
       {session.invite && (
@@ -211,7 +234,7 @@ function Updates({ update, action, active, sessionPending, error, onCheck, onIns
 }
 
 function App() {
-  const [page, setPage] = useState('host')
+  const [page, setPage] = useState('local')
   const [session, setSession] = useState(idle)
   const [update, setUpdate] = useState(idleUpdate)
   const [updateAction, setUpdateAction] = useState(null)
@@ -288,7 +311,7 @@ function App() {
   }, [])
 
   const active = ['starting', 'running', 'stopping'].includes(session.phase)
-  const sessionPage = page === 'host' || page === 'guest'
+  const sessionPage = page in activeLabels
   const currentSession = session.mode === page
   const installing = updateAction === 'install'
   const locked = !bridge || pending || active || installing
@@ -307,6 +330,11 @@ function App() {
     } finally {
       setPending(false)
     }
+  }
+
+  function startLocal() {
+    if (locked) return
+    void request(() => bridge.startLocal())
   }
 
   function startHost(event) {
@@ -352,12 +380,15 @@ function App() {
         <div className="save-message" role="status">
           {!bridge && 'Open WinJoy as a desktop app to start a session.'}
           {active && session.phase !== 'running' && session.status}
-          {session.phase === 'running' && !currentSession && (session.mode === 'host' ? 'Host session active' : 'Guest session active')}
+          {session.phase === 'running' && !currentSession && activeLabels[session.mode]}
         </div>
         {active ? <button key="stop" type="button" className="button button-secondary" disabled={pending || installing || session.phase === 'stopping'}
           onClick={() => void request(() => bridge.stop())}>Stop session</button>
-          : <button key="start" type="submit" form={`${page}-form`} className="button button-primary"
-            disabled={locked || (page === 'host' && networkPending)}>{startLabel}</button>}
+          : page === 'local'
+            ? <button key="start-local" type="button" className="button button-primary" disabled={locked}
+                onClick={startLocal}>Start local controller</button>
+            : <button key="start" type="submit" form={`${page}-form`} className="button button-primary"
+                disabled={locked || (page === 'host' && networkPending)}>{startLabel}</button>}
       </div>
     </footer>
   )
@@ -370,8 +401,9 @@ function App() {
       }}>
       <div className="page-content">
         <header className="page-heading">
-          {page === 'host' && <><h1>Host a game</h1><p>Run a local multiplayer game on this PC and connect two keyboards as separate Xbox controllers.</p></>}
-          {page === 'guest' && <><h1>Join a game</h1><p>Use your keyboard as the second controller on your friend’s PC.</p></>}
+          {page === 'local' && <><h1>Local controller</h1><p>Use this PC’s keyboard as one Xbox controller. WinJoy’s Local mode works without a network connection.</p></>}
+          {page === 'host' && <><h1>Host a game</h1><p>Connect a second keyboard over your network and use both as separate Xbox controllers on this PC.</p></>}
+          {page === 'guest' && <><h1>Join a game</h1><p>Send your keyboard input to your friend’s PC over the network.</p></>}
           {page === 'controls' && <h1>Controls</h1>}
           {page === 'updates' && <h1>Updates</h1>}
         </header>
@@ -381,11 +413,12 @@ function App() {
           sessionPending={pending || session.phase === 'stopping'} error={updateError}
           onCheck={() => void requestUpdate('check')} onInstall={() => void requestUpdate('install')} />}
         {sessionPage && active && !currentSession && (
-          <Section title="Session in progress" description="Stop your current session to switch between hosting and joining." />
+          <Section title="Session in progress" description="Stop your current session to switch modes." />
         )}
         {sessionPage && currentSession && session.phase === 'running' && (
           <SessionDetails session={session} onCopy={copyInvite} copied={copied} />
         )}
+        {page === 'local' && (!active || (currentSession && session.phase !== 'running')) && <LocalGuide />}
         {page === 'host' && (!active || (currentSession && session.phase !== 'running')) && (
           <HostSetup addresses={displayAddresses} networkPending={networkPending} bind={bind} setBind={setBind}
             port={hostPort} setPort={setHostPort} onSubmit={startHost} locked={locked} />

@@ -55,7 +55,7 @@ function loadClient() {
   }
 }
 
-function openControllers(): { set(player: 1 | 2, state: number): void; close(): void } {
+function openControllers(count: 1 | 2): { set(player: 1 | 2, state: number): void; close(): void } {
   // ViGEm's XUSB_REPORT is 12 bytes and passed by value. The Windows x64 ABI
   // passes this aggregate as a pointer to caller-owned, 16-byte-aligned memory.
   // https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention#parameter-passing
@@ -105,7 +105,7 @@ function openControllers(): { set(player: 1 | 2, state: number): void; close(): 
     if (!client) throw new Error("Couldn't allocate a ViGEm client.");
     checkResult(api.vigem_connect(client), "Connecting to ViGEmBus");
 
-    for (const player of [1, 2] as const) {
+    for (const player of ([1, 2] as const).slice(0, count)) {
       const target = api.vigem_target_x360_alloc();
       if (!target) throw new Error(`Couldn't allocate controller ${player}.`);
       targets.push(target);
@@ -120,14 +120,14 @@ function openControllers(): { set(player: 1 | 2, state: number): void; close(): 
   }
 }
 
-export function createControllers() {
+export function createControllers(count: 1 | 2 = 2) {
   if (process.platform !== "win32" || process.arch !== "x64") {
     throw new Error("Hosting virtual Xbox controllers requires Windows with x64 Bun.");
   }
 
   for (let attempt = 1; ; attempt++) {
     try {
-      return openControllers();
+      return openControllers(count);
     } catch (error) {
       if (!(error instanceof ControllerNotReady) || attempt >= DEVICE_SETUP_ATTEMPTS) throw error;
       // On first use, Windows may still be installing the Xbox 360 device driver.
