@@ -47,7 +47,7 @@ Use **Host** and **Join** to have one PC create both virtual controllers and rec
 | P | Start | Join / pause |
 | F8 | | Toggle WinJoy keyboard capture |
 
-Capture starts paused on both PCs. **F8** toggles it system-wide. Press it again before typing in other apps. Use **Stop session** to disconnect.
+Capture starts paused on both PCs. **F8** toggles it system-wide and plays a distinct tone with a short overlay showing whether capture is on or paused. Press **F8** again before typing in other apps. Use **Stop session** to disconnect.
 
 **Latency** on the Host and Join pages shows the round-trip time of the direct WinJoy connection. Use Steam's streaming performance overlay while playing through Steam. WinJoy checks GitHub for a new stable release at startup, downloads and verifies the installer, and offers **Install update** in **Updates**. Installing closes WinJoy and opens Windows Setup. [Steam Remote Play support](https://help.steampowered.com/en/faqs/view/0689-74B8-92AC-10F2)
 

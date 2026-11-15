@@ -7,6 +7,7 @@ const path = require('node:path')
 const { createInterface } = require('node:readline')
 const { pathToFileURL } = require('node:url')
 const { launchUpdateInstaller } = require('./update-install.cjs')
+const { showCaptureFeedback, closeCaptureFeedback } = require('./capture-feedback.cjs')
 
 const primaryInstance = app.requestSingleInstanceLock()
 if (!primaryInstance) app.quit()
@@ -180,7 +181,13 @@ function startWorker(options) {
     if (patch.latencyMs === null || (Number.isFinite(patch.latencyMs) && patch.latencyMs >= 0)) changes.latencyMs = patch.latencyMs
     if (patch.invite === null || (typeof patch.invite?.address === 'string' &&
         typeof patch.invite?.token === 'string')) changes.invite = patch.invite
-    if (Object.keys(changes).length) updateState(changes)
+    if (Object.keys(changes).length) {
+      const before = state.capture?.enabled
+      updateState(changes)
+      if (typeof before === 'boolean' && changes.capture && before !== changes.capture.enabled) {
+        showCaptureFeedback(changes.capture.enabled)
+      }
+    }
   })
 
   // The worker reports user-facing failures on stdout. Drain native diagnostics as well.
@@ -216,6 +223,7 @@ function startWorker(options) {
 }
 
 async function stopWorker() {
+  closeCaptureFeedback()
   const worker = activeWorker
   if (!worker) {
     if (state.phase !== 'idle') updateState(idle)
@@ -342,6 +350,7 @@ function createWindow() {
   window.webContents.on('will-navigate', event => event.preventDefault())
   window.webContents.on('will-frame-navigate', event => event.preventDefault())
   window.once('ready-to-show', () => window.show())
+  window.once('closed', closeCaptureFeedback)
 
   function reportMaximizeState() {
     if (!window.isDestroyed()) window.webContents.send('window:maximized-change', window.isMaximized())
@@ -369,7 +378,7 @@ app.whenReady().then(() => {
 })
 
 app.on('second-instance', () => {
-  const [window] = BrowserWindow.getAllWindows()
+  const window = BrowserWindow.getAllWindows().find(window => window.webContents.getURL() === entryURL)
   if (!window) return
   if (window.isMinimized()) window.restore()
   window.focus()
